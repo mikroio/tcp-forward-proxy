@@ -6,6 +6,7 @@ import (
   "time"
   "errors"
   "strconv"
+  "io"
   "math/rand"
 )
 import "gopkg.in/fatih/pool.v2"
@@ -107,36 +108,56 @@ func (state *targetState) connect() (net.Conn, error) {
   return state.pool.Get()
 }
 
-func (proxy *Proxy) handleConnection(in net.Conn) error {
+func (proxy *Proxy) handleConnection(in *net.TCPConn) error {
   defer in.Close()
 
-  out, err := proxy.connectionFactory()
+  plainOut, err := proxy.connectionFactory()
   if err != nil {
     log.Print("could no create outgoing connection", err)
     return err
   }
+  out := plainOut.(*net.TCPConn)
   defer out.Close()
 
-  data := make([]byte, 1024 * 1024)
+  serverClosed := make(chan struct{}, 1)
+  clientClosed := make(chan struct{}, 1)
 
-  for {
-    n, err := in.Read(data)
-    if err != nil {
-      log.Printf("error reading data:", err)
-      break
-    }
-    if n == 0 {
-      break
-    }
+  go broker(out, in, clientClosed)
+  go broker(in, out, serverClosed)
 
-    _, err = out.Write(data[:n])
-    if err != nil {
-      log.Printf("error writing data:", err)
-      break
-    }
+  var waitFor chan struct{}
+
+  select {
+    case <-clientClosed:
+    // the client closed first and any more packets from the server aren't
+    // useful, so we can optionally SetLinger(0) here to recycle the port
+    // faster.
+    out.SetLinger(0)
+    out.CloseRead()
+    waitFor = serverClosed
+  case <-serverClosed:
+    in.CloseRead()
+    waitFor = clientClosed
   }
 
+  <- waitFor
   return nil
+}
+
+func broker(dst, src net.Conn, srcClosed chan struct{}) {
+  // We can handle errors in a finer-grained manner by inlining io.Copy (it's
+  // simple, and we drop the ReaderFrom or WriterTo checks for
+  // net.Conn->net.Conn transfers, which aren't needed). This would also let
+  // us adjust buffersize.
+  _, err := io.Copy(dst, src)
+
+  if err != nil {
+    log.Printf("Copy error: %s", err)
+  }
+  if err := src.Close(); err != nil {
+    log.Printf("Close error: %s", err)
+  }
+  srcClosed <- struct{}{}
 }
 
 func shuffle(arr []string) {
