@@ -19,6 +19,7 @@ type Config struct {
 
 type targetState struct {
   pool pool.Pool
+  hostport string
 }
 
 type Proxy struct {
@@ -96,7 +97,7 @@ func (proxy *Proxy) ensureTargetState(hostport string) (*targetState) {
   }
 
   if _, ok := proxy.states[hostport]; !ok {
-    val := &targetState{}
+    val := &targetState{hostport: hostport}
     proxy.states[hostport] = val
     val.pool, _ = pool.NewChannelPool(0, proxy.config.MaxPoolSize, factory)
   }
@@ -105,7 +106,8 @@ func (proxy *Proxy) ensureTargetState(hostport string) (*targetState) {
 }
 
 func (state *targetState) connect() (net.Conn, error) {
-  return state.pool.Get()
+  //return state.pool.Get()
+  return net.DialTimeout("tcp", state.hostport, time.Second * 10)
 }
 
 func (proxy *Proxy) handleConnection(in *net.TCPConn) error {
